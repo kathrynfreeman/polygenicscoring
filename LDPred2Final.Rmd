@@ -1,0 +1,297 @@
+---
+title: "LDPred2 Final Script"
+author: "Kathryn Freeman"
+date: "Nov 9, 2022"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Libraries
+```{r}
+library(bigsnpr)
+library(bigreadr)
+library(dplyr)
+library(ggplot2)
+```
+
+# Polygenic Scoring Part 1
+## LD Ref and Summary Stats
+```{r}
+map_ldref <- readRDS("/Users/katefreeman/Documents/uhergenetictest/small/map.rds")
+```
+
+```{r}
+sumstats <- bigreadr::fread2("/Users/katefreeman/Documents/uhergenetictest/small/pgc-bip2021-all.vcf.tsv.gz", na.strings = "NULL", select = c("#CHROM","POS", "A1", "A2","BETA", "SE", "NCAS", "NCON"),  
+col.names = c("chr", "pos", "a0", "a1", "beta", "beta_se", "NCAS", "NCON"))
+
+sumstats$n_eff <- 4 / (1 / sumstats$NCAS + 1 / sumstats$NCON)
+
+sumstats = subset(sumstats, select = -c(NCAS, NCON))
+
+str(sumstats)
+```
+
+```{r}
+info_snp <- snp_match(sumstats, map_ldref)
+```
+
+```{r}
+(info_snp <- tidyr::drop_na(tibble::as_tibble(info_snp)))
+```
+
+```{r}
+sd_ldref <- with(info_snp, sqrt(2 * af_UKBB * (1 - af_UKBB)))
+sd_ss <- with(info_snp, 2 / sqrt(n_eff * beta_se^2))
+```
+
+```{r}
+is_bad <-
+  sd_ss < (0.5 * sd_ldref) | sd_ss > (sd_ldref + 0.1) | sd_ss < 0.1 | sd_ldref < 0.05
+```
+
+```{r}
+library(ggplot2)
+qplot(sd_ldref, sd_ss, color = is_bad, alpha = I(0.5)) +
+  theme_bigstatsr() +
+  coord_equal() +
+  scale_color_viridis_d(direction = -1) +
+  geom_abline(linetype = 2, color = "red") +
+  labs(x = "Standard deviations derived from allele frequencies of the LD reference",
+       y = "Standard deviations derived from the summary statistics",
+       color = "Removed?")
+```
+
+```{r}
+df_beta <- info_snp[!is_bad, ]
+```
+
+
+## Plink Data 
+```{r}
+snp_readBed("/Users/katefreeman/Documents/genotypedata/genotype2020hg19/forbow20hg19_QC.bed")
+```
+
+```{r}
+obj.bigSNP <- snp_attach("/Users/katefreeman/Documents/genotypedata/genotype2020hg19/forbow20hg19_QC.rds")
+
+G   <- obj.bigSNP$genotypes
+CHR <- obj.bigSNP$map$chromosome
+POS <- obj.bigSNP$map$physical.pos
+#y   <- obj.bigSNP$fam$affection
+NCORES <- nb_cores()
+
+map_test <- dplyr::transmute(obj.bigSNP$map,
+                        chr = chromosome, pos = physical.pos,
+                        a0 = allele1, a1 = allele2)
+```
+
+```{r}
+set.seed(1)
+#ind.val <- sample(nrow(G), 350)
+#ind.test <- setdiff(rows_along(G), ind.val)
+ind.tot <- rows_along(G)
+```
+
+```{r}
+in_test <- vctrs::vec_in(df_beta[, c("chr", "pos")], map_test[, c("chr", "pos")])
+df_beta <- df_beta[in_test, ]
+```
+
+
+## Correlaion Matrix
+```{r}
+tmp <- tempfile(tmpdir = "tmp-data")
+
+for (chr in 1:22) {
+
+  cat(chr, ".. ", sep = "")
+
+  ## indices in 'df_beta'
+  ind.chr <- which(df_beta$chr == chr)
+  ## indices in 'map_ldref'
+  ind.chr2 <- df_beta$`_NUM_ID_`[ind.chr]
+  ## indices in 'corr_chr'
+  ind.chr3 <- match(ind.chr2, which(map_ldref$chr == chr))
+
+  corr_chr <- readRDS(paste0("/Users/katefreeman/Downloads/ldref/LD_with_blocks_chr", chr, ".rds"))[ind.chr3, ind.chr3]
+
+  if (chr == 1) {
+    corr <- as_SFBM(corr_chr, tmp)
+  } else {
+    corr$add_columns(corr_chr, nrow(corr))
+  }
+}
+```
+```{r}
+file.size(corr$sbk) / 1024^3  # file size in GB
+```
+
+
+## Estimate of H2 from LD Score regression
+- statistical genetics, linkage disequilibrium score regression (LDSR or LDSC) is a technique that aims to quantify the separate contributions of polygenic effects and various confounding factors, such as population stratification, based on summary statistics from genome-wide association studies (GWASs)
+-LDpred2-auto, which automatically estimates p (the proportion of causal variants) and h2 (the SNP heritability) from data and therefore is free of hyper-parameters to tune 
+
+```{r}
+(ldsc <- with(df_beta, snp_ldsc(ld, ld_size = nrow(map_ldref),
+                                chi2 = (beta / beta_se)^2,
+                                sample_size = n_eff,
+                                ncores = NCORES)))
+```
+
+```{r}
+h2_est <- ldsc[["h2"]]
+```
+
+## LDpred1
+
+```{r}
+beta_inf <- snp_ldpred2_inf(corr, df_beta, h2 = h2_est)
+
+pred_inf <- big_prodVec(G, beta_inf, ind.row = ind.tot, ind.col = df_beta[["_NUM_ID_"]])
+```
+
+## LDpred2-grid
+
+- the grid model requires a validation set which means that affection data must be availible which we do not have, therefore the best option is using the automatic model which does not require validation
+
+(h2_seq <- round(h2_est * c(0.3, 0.7, 1, 1.4), 4))
+
+(p_seq <- signif(seq_log(1e-5, 1, length.out = 21), 2))
+
+params <- expand.grid(p = p_seq, h2 = h2_seq, sparse = c(FALSE, TRUE))
+dim(params)
+
+beta_grid <- snp_ldpred2_grid(corr, df_beta, params, ncores = NCORES)
+
+
+pred_grid <- big_prodMat(G, beta_grid, ind.col = df_beta[["_NUM_ID_"]])
+params$score <- apply(pred_grid[ind.val, ], 2, function(x) {
+  if (all(is.na(x))) return(NA)
+  summary(lm(y[ind.val] ~ x))$coef["x", 3]
+  # summary(glm(y[ind.val] ~ x, family = "binomial"))$coef["x", 3]
+})
+
+
+
+ggplot(params, aes(x = p, y = score, color = as.factor(h2))) +
+  theme_bigstatsr() +
+  geom_point() +
+  geom_line() +
+  scale_x_log10(breaks = 10^(-5:0), minor_breaks = params$p) +
+  facet_wrap(~ sparse, labeller = label_both) +
+  labs(y = "GLM Z-Score", color = "h2") +
+  theme(legend.position = "top", panel.spacing = unit(1, "lines"))
+
+
+
+params %>%
+    mutate(sparsity = colMeans(beta_grid == 0), id = row_number()) %>%
+  arrange(desc(score)) %>%
+  mutate_at(c("score", "sparsity"), round, digits = 3) %>%
+  slice(1:10)
+
+
+
+best_beta_grid <- params %>%
+  mutate(id = row_number()) %>%
+  # filter(sparse) %>% 
+  arrange(desc(score)) %>%
+  slice(1) %>%
+  pull(id) %>%
+  beta_grid[, .]
+
+
+
+pred <- big_prodVec(G, best_beta_grid, ind.row = ind.tot,
+               ind.col = df_beta[["_NUM_ID_"]])
+
+
+
+write.csv(pred,file= "/Users/katefreeman/Desktop/pred_grid.csv" ,row.names=F)
+
+
+## Auto
+
+```{r}
+# LDpred2-auto
+multi_auto <- snp_ldpred2_auto(corr, df_beta, h2_init = h2_est,
+                               vec_p_init = seq_log(1e-4, 0.5, length.out = 30),
+                               allow_jump_sign = FALSE, shrink_corr = 0.95,
+                               ncores = NCORES)
+```
+
+```{r}
+str(multi_auto[[1]], max.level = 1)
+```
+
+```{r}
+library(ggplot2)
+auto <- multi_auto[[1]]  # first chain
+plot_grid(
+  qplot(y = auto$path_p_est) +
+    theme_bigstatsr() +
+    geom_hline(yintercept = auto$p_est, col = "blue") +
+    scale_y_log10() +
+    labs(y = "p"),
+  qplot(y = auto$path_h2_est) +
+    theme_bigstatsr() +
+    geom_hline(yintercept = auto$h2_est, col = "blue") +
+    labs(y = "h2"),
+  ncol = 1, align = "hv"
+)
+```
+
+Option A - we proposed an automatic way of filtering bad chains by comparing the scale of the resulting predictions:
+
+beta_auto <- sapply(multi_auto, function(auto) auto$beta_est)
+pred_auto <- big_prodMat(G, beta_auto, ind.col = df_beta[["_NUM_ID_"]],
+                         ncores = NCORES)
+sc <- apply(pred_auto, 2, sd)
+keep <- abs(sc - median(sc)) < 3 * mad(sc)
+final_beta_auto <- rowMeans(beta_auto[, keep])
+
+final_pred_auto <- big_prodVec(G, final_beta_auto,
+                               ind.col = df_beta[["_NUM_ID_"]],
+                               ncores = NCORES)
+
+
+
+Option B -  We have tested a somewhat equivalent and simpler alternative since:
+```{r}
+range <- sapply(multi_auto, function(auto) diff(range(auto$corr_est)))
+keep <- (range > (0.9 * quantile(range, 0.9)))
+```
+
+```{r}
+beta_auto <- rowMeans(sapply(multi_auto[keep], function(auto) auto$beta_est))
+
+pred_auto <- big_prodVec(G, beta_auto, ind.row = ind.tot, ind.col = df_beta[["_NUM_ID_"]])
+```
+
+## Z-scoring PGS
+```{r}
+k <- mean(pred_auto)
+t <- sd(pred_auto)
+```
+
+```{r}
+z_auto <- (pred_auto - (k))/t
+```
+
+```{r}
+plot(z_auto, type = "o", col = "red")
+```
+# Merging with Family IDs
+
+```{r}
+x <- obj.bigSNP$fam$sample.ID
+f <- obj.bigSNP$fam$family.ID
+```
+
+
+```{r}
+auto_pred <- data.frame(x, f, z_auto)
+write.csv(auto_pred, file = "/Users/katefreeman/Documents/uhergenetictest/large/scores/auto_pred.csv")
+```
+

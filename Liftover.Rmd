@@ -1,0 +1,75 @@
+---
+title: "Plink + Liftover Script"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+## Libraries
+```{r}
+library(bigsnpr)
+library(bigreadr)
+library(dplyr)
+library(ggplot2)
+```
+
+## Liftover Pipeline
+
+### Import MAP file that was manually turned into TXT file
+```{r}
+data <- read.table(file="/Users/katefreeman/Documents/genotypedata/genotype2020hg19/forbow2020.txt")
+```
+
+```{r}
+info_snp <- rename(data, chr=V1, pos=V4)
+```
+
+
+### Use Liftover Executable
+```{r}
+hg19 <- snp_modifyBuild(
+  info_snp,
+  "/Users/katefreeman/Documents/plink/liftOver",
+  from = "hg38",
+  to = "hg19",
+  check_reverse = TRUE
+)
+```
+
+### Convert any NAs to 0
+```{r}
+hg19[is.na(hg19)] = 0
+```
+
+### Save Liftover Dataset
+```{r}
+write.table(hg19, file = "/Users/katefreeman/Documents/genotypedata/genotype2020hg19/forbow20hg19.txt", row.names= FALSE, quote = FALSE)
+```
+### Manually remame TXT file to MAP file with the prefix matching PED and remove title line
+
+## Plink 
+### Test to see if basic plink will run
+```{r}
+prefix.in = "/Users/katefreeman/Documents/genotypedata/genotype2020hg19/forbow20hg19"
+```
+
+```{r}
+snp_plinkQC(
+"/Users/katefreeman/Documents/plink/plink",
+prefix.in,
+file.type = "--file",
+prefix.out = paste0(prefix.in, "_QC"),
+maf = 0.01,
+geno = 0.1,
+mind = 0.1,
+hwe = 10e-10,
+autosome.only = FALSE,
+extra.options = "",
+verbose = TRUE
+)
+```
+
+
+
