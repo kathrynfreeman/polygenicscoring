@@ -1,13 +1,13 @@
 ---
 title: "Plink + Liftover Script"
-output: html_notebook
+author: "Kathryn Freeman"
+date: "Nov 9, 2022"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
 ---
 
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
-
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
-
-## Libraries
+## Libraries 
 ```{r}
 library(bigsnpr)
 library(bigreadr)
@@ -47,7 +47,7 @@ hg19[is.na(hg19)] = 0
 ```{r}
 write.table(hg19, file = "/Users/katefreeman/Documents/genotypedata/genotype2020hg19/forbow20hg19.txt", row.names= FALSE, quote = FALSE)
 ```
-### Manually remame TXT file to MAP file with the prefix matching PED and remove title line
+### Remove title line in TXT file & manually remame TXT file to MAP file with the prefix matching PED 
 
 ## Plink 
 ### Test to see if basic plink will run

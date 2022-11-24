@@ -7,6 +7,7 @@ editor_options:
   chunk_output_type: inline
 ---
 
+
 # Libraries
 ```{r}
 library(bigsnpr)
@@ -294,4 +295,3 @@ f <- obj.bigSNP$fam$family.ID
 auto_pred <- data.frame(x, f, z_auto)
 write.csv(auto_pred, file = "/Users/katefreeman/Documents/uhergenetictest/large/scores/auto_pred.csv")
 ```
-
